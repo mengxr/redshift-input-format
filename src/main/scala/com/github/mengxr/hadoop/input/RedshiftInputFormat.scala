@@ -29,6 +29,10 @@ import org.apache.hadoop.io.compress.CompressionCodecFactory
 import org.apache.hadoop.mapreduce.lib.input.{FileInputFormat, FileSplit}
 import org.apache.hadoop.mapreduce.{InputSplit, RecordReader, TaskAttemptContext}
 
+import org.apache.spark.SparkContext._
+import org.apache.spark.sql.{SQLContext, SchemaRDD, Row}
+import org.apache.spark.sql.catalyst.types._
+
 /**
  * Input format for text records saved with in-record delimiter and newline characters escaped.
  *
@@ -74,6 +78,28 @@ object RedshiftInputFormat {
       c.charAt(0)
     }
   }
+
+  /**
+   * Wrapper of SQLContext that provide `redshiftFile` method.
+   */
+  class SQLContextWithRedshiftFile(sqlContext: SQLContext) {
+
+    /**
+     * Read a file unloaded from Redshift into a SchemaRDD.
+     * @param path input path
+     * @return a SchemaRDD
+     */
+    def redshiftFile(path: String, columns: Seq[String]): SchemaRDD = {
+      val sc = sqlContext.sparkContext
+      val rdd = sc.newAPIHadoopFile(path, classOf[RedshiftInputFormat],
+        classOf[java.lang.Long], classOf[Array[String]], sc.hadoopConfiguration)
+      val schema = StructType(columns.map(c => StructField(c, StringType, false)))
+      sqlContext.applySchema(rdd.values.map(x => Row(x: _*)), schema)
+    }
+  }
+
+  implicit def fromSQLContext(sqlContext: SQLContext): SQLContextWithRedshiftFile =
+    new SQLContextWithRedshiftFile(sqlContext)
 }
 
 private[input] class RedshiftRecordReader extends RecordReader[JavaLong, Array[String]] {
@@ -95,6 +121,8 @@ private[input] class RedshiftRecordReader extends RecordReader[JavaLong, Array[S
   @inline private[this] final val carriageReturn: Byte = '\r'
 
   @inline private[this] final val defaultBufferSize = 1024 * 1024
+
+  private[this] val chars = ArrayBuffer.empty[Byte]
 
   override def initialize(inputSplit: InputSplit, context: TaskAttemptContext): Unit = {
     val split = inputSplit.asInstanceOf[FileSplit]
@@ -216,7 +244,7 @@ private[input] class RedshiftRecordReader extends RecordReader[JavaLong, Array[S
     var endOfRecord = false
     while (!endOfRecord && !eof) {
       var endOfField = false
-      val chars = ArrayBuffer.empty[Byte]
+      chars.clear()
       while (!endOfField && !endOfRecord && !eof) {
         val v = reader.read()
         if (v < 0) {
@@ -254,3 +282,4 @@ private[input] class RedshiftRecordReader extends RecordReader[JavaLong, Array[S
     fields.toArray
   }
 }
+
